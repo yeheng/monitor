@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "monitor-api",
+    "monitor-core",
+    "monitor-scheduler",
+    "monitor-scripting",
+]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Web framework
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Configuration
+config = "0.15"
+
+# Time and dates
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Authentication
+jsonwebtoken = "9.0"
+argon2 = "0.5"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+# Redis
+redis = { version = "0.32", features = ["tokio-comp"] }
+
+# Cron scheduler
+tokio-cron-scheduler = "0.14"
+
+# QuickJS
+rquickjs = { version = "0.9", features = ["bindgen"] }

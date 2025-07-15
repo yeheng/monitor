@@ -1,0 +1,19 @@
+[package]
+name = "monitor-scheduler"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+monitor-core = { path = "../monitor-core" }
+tokio = { workspace = true }
+tokio-cron-scheduler = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
