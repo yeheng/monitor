@@ -3,16 +3,35 @@ use rquickjs::{Context, Runtime, Value as JsValue};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
+use crate::models::{ScriptResult, ValidationContext, ValidationResult};
+
 pub struct ScriptEngine {
     runtime: Runtime,
     timeout: Duration,
 }
 
 impl ScriptEngine {
+    /// 创建一个新的ScriptEngine实例，使用默认的30秒超时时间
+    /// 
+    /// # 返回值
+    /// 返回一个新的ScriptEngine实例
+    /// 
+    /// # 错误处理
+    /// 如果创建Runtime失败，返回错误
     pub fn new() -> Result<Self> {
         Self::with_timeout(Duration::from_secs(30))
     }
 
+    /// 使用指定超时时间创建ScriptEngine实例
+    /// 
+    /// # 参数
+    /// * `timeout` - 脚本执行的最大允许时间
+    /// 
+    /// # 返回值
+    /// 返回一个新的ScriptEngine实例
+    /// 
+    /// # 错误处理
+    /// 如果创建Runtime失败，返回错误
     pub fn with_timeout(timeout: Duration) -> Result<Self> {
         let runtime = Runtime::new()
             .map_err(|e| Error::script_execution(format!("Failed to create runtime: {}", e)))?;
@@ -20,6 +39,20 @@ impl ScriptEngine {
         Ok(Self { runtime, timeout })
     }
 
+    /// 执行给定的JavaScript脚本并返回结果
+    /// 
+    /// # 参数
+    /// * `script` - 要执行的JavaScript代码
+    /// * `context_data` - 传递给脚本的上下文数据
+    /// 
+    /// # 返回值
+    /// 返回包含执行结果或错误信息的ScriptResult
+    /// 
+    /// # 实现逻辑
+    /// 1. 创建JavaScript执行上下文
+    /// 2. 设置上下文数据和工具函数
+    /// 3. 执行脚本并记录执行时间
+    /// 4. 处理执行结果（成功或失败）
     pub async fn execute_script(&self, script: &str, context_data: &Value) -> Result<ScriptResult> {
         let start_time = Instant::now();
         let script_with_metadata = self.wrap_script_with_metadata(script);
@@ -80,6 +113,18 @@ impl ScriptEngine {
         result.map_err(|e| Error::script_execution(format!("Script execution failed: {}", e)))
     }
 
+    /// 创建带有元数据的脚本包装器，用于增强错误报告和超时处理
+    /// 
+    /// # 参数
+    /// * `script` - 原始JavaScript代码
+    /// 
+    /// # 返回值
+    /// 返回包装后的JavaScript代码
+    /// 
+    /// # 实现逻辑
+    /// 1. 对于简单表达式不进行包装
+    /// 2. 对于复杂脚本添加超时检查和错误处理
+    /// 3. 返回包装后的脚本代码
     fn wrap_script_with_metadata(&self, script: &str) -> String {
         // For simple expressions and single statements, don't wrap them
         let trimmed = script.trim();
@@ -97,7 +142,7 @@ impl ScriptEngine {
 (function() {{
     // Timeout check wrapper
     function checkTimeout() {{
-        const now = performance && performance.now ? performance.now() : Date.now();
+        const now = performance && performance.now ? performance.now : Date.now();
         if (typeof __start_time !== 'undefined' && typeof __timeout_ms !== 'undefined') {{
             if ((now - __start_time) > __timeout_ms) {{
                 throw new Error('Script execution timeout after ' + __timeout_ms + 'ms');
@@ -125,12 +170,32 @@ impl ScriptEngine {
         )
     }
 
+    /// 获取工具函数的JavaScript代码
+    /// 
+    /// # 返回值
+    /// 返回包含工具函数的字符串
+    /// 
+    /// # 实现逻辑
+    /// 从外部文件加载工具函数
     fn get_utility_functions(&self) -> String {
         // Load utility functions from an external file
         let utility_script = include_str!("utility_functions.js");
         utility_script.to_string()
     }
 
+    /// 提取详细的错误信息
+    /// 
+    /// # 参数
+    /// * `error` - JavaScript错误对象
+    /// * `original_script` - 原始脚本代码
+    /// 
+    /// # 返回值
+    /// 返回包含详细错误信息的JSON对象
+    /// 
+    /// # 实现逻辑
+    /// 1. 处理异常类型错误
+    /// 2. 提取错误消息
+    /// 3. 获取脚本预览
     fn extract_detailed_error(&self, error: &rquickjs::Error, original_script: &str) -> Value {
         match error {
             rquickjs::Error::Exception => {
@@ -157,6 +222,18 @@ impl ScriptEngine {
         }
     }
 
+    /// 解析错误消息并生成详细的错误信息
+    /// 
+    /// # 参数
+    /// * `error_msg` - 错误消息字符串
+    /// * `script` - 原始脚本代码
+    /// 
+    /// # 返回值
+    /// 返回包含详细错误信息的JSON对象，如果无法解析则返回None
+    /// 
+    /// # 实现逻辑
+    /// 1. 检查错误类型（语法错误、引用错误、类型错误）
+    /// 2. 生成相应的错误信息和建议
     fn parse_error_message(&self, error_msg: &str, script: &str) -> Option<Value> {
         // Try to extract line/column information from error message
         let _lines: Vec<&str> = script.lines().collect();
@@ -192,6 +269,18 @@ impl ScriptEngine {
         None
     }
 
+    /// 获取脚本预览
+    /// 
+    /// # 参数
+    /// * `script` - 原始脚本代码
+    /// * `error_line` - 错误发生的行号（可选）
+    /// 
+    /// # 返回值
+    /// 返回包含脚本预览信息的JSON对象
+    /// 
+    /// # 实现逻辑
+    /// 1. 如果有错误行号，显示该行附近的代码
+    /// 2. 否则显示脚本开头的若干行
     fn get_script_preview(&self, script: &str, error_line: Option<usize>) -> Value {
         let lines: Vec<&str> = script.lines().collect();
         let total_lines = lines.len();
@@ -226,6 +315,19 @@ impl ScriptEngine {
         })
     }
 
+    /// 执行验证脚本
+    /// 
+    /// # 参数
+    /// * `script` - 验证脚本代码
+    /// * `response_data` - 传递给脚本的响应数据
+    /// 
+    /// # 返回值
+    /// 返回包含验证结果的ValidationResult
+    /// 
+    /// # 实现逻辑
+    /// 1. 将响应数据序列化为JSON
+    /// 2. 执行验证脚本
+    /// 3. 根据执行结果生成验证结果
     pub async fn execute_validation_script(
         &self,
         script: &str,
@@ -242,9 +344,9 @@ impl ScriptEngine {
             // 2. The result is truthy (if it's a boolean/value)
             let result_is_truthy = script_result
                 .result
-                .as_ref()
+                .clone()
                 .map(|v| match v {
-                    Value::Bool(b) => *b,
+                    Value::Bool(b) => b,
                     Value::Null => false,
                     Value::Number(n) => n.as_f64().unwrap_or(0.0) != 0.0,
                     Value::String(s) => !s.is_empty(),
@@ -377,32 +479,6 @@ fn js_value_to_serde_value(value: &JsValue) -> Result<Value> {
         "__type": "unknown",
         "string_representation": format!("{:?}", value)
     }))
-}
-
-#[derive(Debug, Clone)]
-pub struct ScriptResult {
-    pub success: bool,
-    pub result: Option<Value>,
-    pub error: Option<Value>,
-    pub execution_time_ms: u64,
-    pub memory_usage: Option<u64>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ValidationContext {
-    pub status_code: u16,
-    pub headers: std::collections::HashMap<String, String>,
-    pub body: String,
-    pub response_time: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct ValidationResult {
-    pub passed: bool,
-    pub message: String,
-    pub details: Option<Value>,
-    pub error_details: Option<Value>,
-    pub execution_time_ms: u64,
 }
 
 impl Default for ScriptEngine {
