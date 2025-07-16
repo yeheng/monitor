@@ -1,21 +1,42 @@
 use monitor_core::{Error, Result};
+/// 引擎核心模块
+///
+/// 提供JavaScript脚本执行环境，支持脚本验证、超时控制和错误处理
 use rquickjs::{Context, Runtime, Value as JsValue};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 use crate::models::{ScriptResult, ValidationContext, ValidationResult};
 
+/// JavaScript脚本执行引擎
+///
+/// 基于rquickjs的JavaScript运行时，提供安全的脚本执行环境
+/// 支持超时控制、错误处理和上下文数据传递
+///
+/// # 主要功能
+/// - 执行任意JavaScript代码
+/// - 提供验证脚本执行功能
+/// - 支持超时控制防止无限循环
+/// - 提供详细的错误信息和调试支持
+///
+/// # 示例
+/// ```
+/// let engine = ScriptEngine::new().unwrap();
+/// let result = engine.execute_script("1 + 1", &json!({})).await;
+/// ```
 pub struct ScriptEngine {
+    /// JavaScript运行时实例
     runtime: Runtime,
+    /// 脚本执行的最大超时时间
     timeout: Duration,
 }
 
 impl ScriptEngine {
     /// 创建一个新的ScriptEngine实例，使用默认的30秒超时时间
-    /// 
+    ///
     /// # 返回值
     /// 返回一个新的ScriptEngine实例
-    /// 
+    ///
     /// # 错误处理
     /// 如果创建Runtime失败，返回错误
     pub fn new() -> Result<Self> {
@@ -23,13 +44,13 @@ impl ScriptEngine {
     }
 
     /// 使用指定超时时间创建ScriptEngine实例
-    /// 
+    ///
     /// # 参数
     /// * `timeout` - 脚本执行的最大允许时间
-    /// 
+    ///
     /// # 返回值
     /// 返回一个新的ScriptEngine实例
-    /// 
+    ///
     /// # 错误处理
     /// 如果创建Runtime失败，返回错误
     pub fn with_timeout(timeout: Duration) -> Result<Self> {
@@ -40,14 +61,14 @@ impl ScriptEngine {
     }
 
     /// 执行给定的JavaScript脚本并返回结果
-    /// 
+    ///
     /// # 参数
     /// * `script` - 要执行的JavaScript代码
     /// * `context_data` - 传递给脚本的上下文数据
-    /// 
+    ///
     /// # 返回值
     /// 返回包含执行结果或错误信息的ScriptResult
-    /// 
+    ///
     /// # 实现逻辑
     /// 1. 创建JavaScript执行上下文
     /// 2. 设置上下文数据和工具函数
@@ -114,13 +135,13 @@ impl ScriptEngine {
     }
 
     /// 创建带有元数据的脚本包装器，用于增强错误报告和超时处理
-    /// 
+    ///
     /// # 参数
     /// * `script` - 原始JavaScript代码
-    /// 
+    ///
     /// # 返回值
     /// 返回包装后的JavaScript代码
-    /// 
+    ///
     /// # 实现逻辑
     /// 1. 对于简单表达式不进行包装
     /// 2. 对于复杂脚本添加超时检查和错误处理
@@ -137,44 +158,18 @@ impl ScriptEngine {
             return script.to_string();
         }
 
-        format!(
-            r#"
-(function() {{
-    // Timeout check wrapper
-    function checkTimeout() {{
-        const now = performance && performance.now ? performance.now : Date.now();
-        if (typeof __start_time !== 'undefined' && typeof __timeout_ms !== 'undefined') {{
-            if ((now - __start_time) > __timeout_ms) {{
-                throw new Error('Script execution timeout after ' + __timeout_ms + 'ms');
-            }}
-        }}
-    }}
-    
-    // Add line tracking for better error reporting
-    try {{
-        checkTimeout();
-        return (function() {{
-            {script}
-        }})();
-    }} catch (error) {{
-        // Re-throw with enhanced error information
-        if (error.name === 'Error' && !error.line) {{
-            error.line = 'unknown';
-            error.column = 'unknown';
-        }}
-        throw error;
-    }}
-}})();
-"#,
-            script = script
-        )
+        // 从外部文件加载脚本包装器模板
+        let wrapper_template = include_str!("script_wrapper.js");
+
+        // 将用户脚本插入到包装器模板中
+        wrapper_template.replace("{script}", script)
     }
 
     /// 获取工具函数的JavaScript代码
-    /// 
+    ///
     /// # 返回值
     /// 返回包含工具函数的字符串
-    /// 
+    ///
     /// # 实现逻辑
     /// 从外部文件加载工具函数
     fn get_utility_functions(&self) -> String {
@@ -184,14 +179,14 @@ impl ScriptEngine {
     }
 
     /// 提取详细的错误信息
-    /// 
+    ///
     /// # 参数
     /// * `error` - JavaScript错误对象
     /// * `original_script` - 原始脚本代码
-    /// 
+    ///
     /// # 返回值
     /// 返回包含详细错误信息的JSON对象
-    /// 
+    ///
     /// # 实现逻辑
     /// 1. 处理异常类型错误
     /// 2. 提取错误消息
@@ -223,14 +218,14 @@ impl ScriptEngine {
     }
 
     /// 解析错误消息并生成详细的错误信息
-    /// 
+    ///
     /// # 参数
     /// * `error_msg` - 错误消息字符串
     /// * `script` - 原始脚本代码
-    /// 
+    ///
     /// # 返回值
     /// 返回包含详细错误信息的JSON对象，如果无法解析则返回None
-    /// 
+    ///
     /// # 实现逻辑
     /// 1. 检查错误类型（语法错误、引用错误、类型错误）
     /// 2. 生成相应的错误信息和建议
@@ -270,14 +265,14 @@ impl ScriptEngine {
     }
 
     /// 获取脚本预览
-    /// 
+    ///
     /// # 参数
     /// * `script` - 原始脚本代码
     /// * `error_line` - 错误发生的行号（可选）
-    /// 
+    ///
     /// # 返回值
     /// 返回包含脚本预览信息的JSON对象
-    /// 
+    ///
     /// # 实现逻辑
     /// 1. 如果有错误行号，显示该行附近的代码
     /// 2. 否则显示脚本开头的若干行
@@ -316,14 +311,14 @@ impl ScriptEngine {
     }
 
     /// 执行验证脚本
-    /// 
+    ///
     /// # 参数
     /// * `script` - 验证脚本代码
     /// * `response_data` - 传递给脚本的响应数据
-    /// 
+    ///
     /// # 返回值
     /// 返回包含验证结果的ValidationResult
-    /// 
+    ///
     /// # 实现逻辑
     /// 1. 将响应数据序列化为JSON
     /// 2. 执行验证脚本
@@ -377,6 +372,19 @@ impl ScriptEngine {
     }
 }
 
+/// 将JavaScript值转换为Rust的serde_json::Value
+///
+/// # 参数
+/// * `value` - 要转换的JavaScript值（rquickjs::Value）
+///
+/// # 返回值
+/// 返回转换后的serde_json::Value，如果转换失败则返回错误
+///
+/// # 处理逻辑
+/// 1. 处理基本类型：undefined、null、布尔值、数字、字符串
+/// 2. 处理复杂类型：数组、函数、对象、符号
+/// 3. 处理特殊对象：Date、RegExp、Error
+/// 4. 为未知类型提供回退处理
 fn js_value_to_serde_value(value: &JsValue) -> Result<Value> {
     if value.is_undefined() {
         return Ok(json!({"__type": "undefined"}));
@@ -481,6 +489,15 @@ fn js_value_to_serde_value(value: &JsValue) -> Result<Value> {
     }))
 }
 
+/// ScriptEngine的默认实现
+///
+/// 使用30秒超时时间创建一个新的ScriptEngine实例
+///
+/// # 返回值
+/// 返回一个新的ScriptEngine实例
+///
+/// # 注意
+/// 如果创建Runtime失败，此实现会panic
 impl Default for ScriptEngine {
     fn default() -> Self {
         Self::new().expect("Failed to create default ScriptEngine")
