@@ -168,7 +168,6 @@ mod engine_tests {
 
         assert!(result.success);
         assert_eq!(result.result, Some(serde_json::json!("completed")));
-        assert!(result.execution_time_ms >= 0);
     }
 
     #[tokio::test]

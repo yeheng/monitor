@@ -2,11 +2,11 @@ use monitor_core::{Error, Result};
 /// 引擎核心模块
 ///
 /// 提供JavaScript脚本执行环境，支持脚本验证、超时控制和错误处理
-use rquickjs::{Context, Runtime, Value as JsValue};
+use rquickjs::{Context, Runtime, Value as JsValue, Ctx};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
-use crate::models::{ScriptResult, ValidationContext, ValidationResult};
+use crate::models::{ScriptResult, SecurityConfig, ValidationContext, ValidationResult};
 
 /// JavaScript脚本执行引擎
 ///
@@ -18,6 +18,8 @@ use crate::models::{ScriptResult, ValidationContext, ValidationResult};
 /// - 提供验证脚本执行功能
 /// - 支持超时控制防止无限循环
 /// - 提供详细的错误信息和调试支持
+/// - 内存和栈大小限制
+/// - 函数黑名单安全控制
 ///
 /// # 示例
 /// ```
@@ -29,10 +31,12 @@ pub struct ScriptEngine {
     runtime: Runtime,
     /// 脚本执行的最大超时时间
     timeout: Duration,
+    /// 安全配置
+    security_config: SecurityConfig,
 }
 
 impl ScriptEngine {
-    /// 创建一个新的ScriptEngine实例，使用默认的30秒超时时间
+    /// 创建一个新的ScriptEngine实例，使用默认的30秒超时时间和默认安全配置
     ///
     /// # 返回值
     /// 返回一个新的ScriptEngine实例
@@ -40,10 +44,10 @@ impl ScriptEngine {
     /// # 错误处理
     /// 如果创建Runtime失败，返回错误
     pub fn new() -> Result<Self> {
-        Self::with_timeout(Duration::from_secs(30))
+        Self::with_config(Duration::from_secs(30), SecurityConfig::default())
     }
 
-    /// 使用指定超时时间创建ScriptEngine实例
+    /// 使用指定超时时间创建ScriptEngine实例，使用默认安全配置
     ///
     /// # 参数
     /// * `timeout` - 脚本执行的最大允许时间
@@ -54,10 +58,49 @@ impl ScriptEngine {
     /// # 错误处理
     /// 如果创建Runtime失败，返回错误
     pub fn with_timeout(timeout: Duration) -> Result<Self> {
+        Self::with_config(timeout, SecurityConfig::default())
+    }
+
+    /// 使用指定的安全配置创建ScriptEngine实例
+    ///
+    /// # 参数
+    /// * `security_config` - 安全配置
+    ///
+    /// # 返回值
+    /// 返回一个新的ScriptEngine实例
+    ///
+    /// # 错误处理
+    /// 如果创建Runtime失败，返回错误
+    pub fn with_security_config(security_config: SecurityConfig) -> Result<Self> {
+        Self::with_config(Duration::from_secs(30), security_config)
+    }
+
+    /// 使用指定超时时间和安全配置创建ScriptEngine实例
+    ///
+    /// # 参数
+    /// * `timeout` - 脚本执行的最大允许时间
+    /// * `security_config` - 安全配置
+    ///
+    /// # 返回值
+    /// 返回一个新的ScriptEngine实例
+    ///
+    /// # 错误处理
+    /// 如果创建Runtime失败，返回错误
+    pub fn with_config(timeout: Duration, security_config: SecurityConfig) -> Result<Self> {
+        
+        // 创建带有内存和栈限制的运行时
         let runtime = Runtime::new()
             .map_err(|e| Error::script_execution(format!("Failed to create runtime: {}", e)))?;
+        
+        // 设置内存限制和栈大小限制
+        runtime.set_memory_limit(security_config.memory_limit);
+        runtime.set_max_stack_size(security_config.stack_size);
 
-        Ok(Self { runtime, timeout })
+        Ok(Self {
+            runtime,
+            timeout,
+            security_config,
+        })
     }
 
     /// 执行给定的JavaScript脚本并返回结果
@@ -84,6 +127,14 @@ impl ScriptEngine {
         let result: Result<ScriptResult> = ctx.with(|ctx| {
             // Set up the context with monitor data
             let global = ctx.globals();
+
+            // 应用安全策略 - 禁用危险函数
+            if let Err(e) = self.apply_security_policies(&ctx) {
+                return Err(Error::script_execution(format!(
+                    "Failed to apply security policies: {}",
+                    e
+                )));
+            }
 
             // Add context data
             if let Ok(context_str) = serde_json::to_string(context_data) {
@@ -308,6 +359,179 @@ impl ScriptEngine {
             "total_lines": total_lines,
             "showing_range": format!("{}-{}", start + 1, end)
         })
+    }
+
+    /// 应用安全策略到JavaScript上下文
+    ///
+    /// # 参数
+    /// * `ctx` - JavaScript执行上下文
+    ///
+    /// # 返回值
+    /// 如果成功应用安全策略返回Ok(())，否则返回错误
+    ///
+    /// # 实现逻辑
+    /// 1. 禁用危险的全局函数
+    /// 2. 根据配置禁用eval和Function构造函数
+    /// 3. 设置安全的全局对象
+    fn apply_security_policies(&self, ctx: &Ctx) -> Result<()> {
+        let _global = ctx.globals();
+
+        // 禁用配置中指定的危险函数
+        for func_name in &self.security_config.denied_functions {
+            // 将危险函数设置为undefined或抛出错误的函数
+            let error_message = format!("Access to '{}' is denied for security reasons", func_name);
+            let deny_script = format!(
+                r#"
+                (function() {{
+                    const originalFunc = globalThis['{}'];
+                    globalThis['{}'] = function() {{
+                        throw new Error('{}');
+                    }};
+                    // 也尝试在window对象上禁用（如果存在）
+                    if (typeof window !== 'undefined') {{
+                        window['{}'] = globalThis['{}'];
+                    }}
+                    // 尝试删除属性
+                    try {{
+                        delete globalThis['{}'];
+                    }} catch(e) {{
+                        // 如果无法删除，至少覆盖它
+                    }}
+                }})();
+                "#,
+                func_name, func_name, error_message, func_name, func_name, func_name
+            );
+
+            ctx.eval::<(), _>(deny_script)
+                .map_err(|e| Error::script_execution(format!("Failed to deny function {}: {}", func_name, e)))?;
+        }
+
+        // 特殊处理eval函数
+        if self.security_config.disable_eval {
+            let eval_deny_script = r#"
+                (function() {
+                    const originalEval = globalThis.eval;
+                    globalThis.eval = function() {
+                        throw new Error('eval() is disabled for security reasons');
+                    };
+                    // 也禁用间接eval
+                    try {
+                        Object.defineProperty(globalThis, 'eval', {
+                            value: function() {
+                                throw new Error('eval() is disabled for security reasons');
+                            },
+                            writable: false,
+                            configurable: false
+                        });
+                    } catch(e) {
+                        // 如果无法重新定义，至少覆盖它
+                    }
+                })();
+            "#;
+
+            ctx.eval::<(), _>(eval_deny_script)
+                .map_err(|e| Error::script_execution(format!("Failed to disable eval: {}", e)))?;
+        }
+
+        // 特殊处理Function构造函数
+        if self.security_config.disable_function_constructor {
+            let function_deny_script = r#"
+                (function() {
+                    const originalFunction = globalThis.Function;
+                    globalThis.Function = function() {
+                        throw new Error('Function constructor is disabled for security reasons');
+                    };
+                    try {
+                        Object.defineProperty(globalThis, 'Function', {
+                            value: function() {
+                                throw new Error('Function constructor is disabled for security reasons');
+                            },
+                            writable: false,
+                            configurable: false
+                        });
+                    } catch(e) {
+                        // 如果无法重新定义，至少覆盖它
+                    }
+                })();
+            "#;
+
+            ctx.eval::<(), _>(function_deny_script)
+                .map_err(|e| Error::script_execution(format!("Failed to disable Function constructor: {}", e)))?;
+        }
+
+        // 禁用模块导入
+        if self.security_config.disable_modules {
+            let module_deny_script = r#"
+                (function() {
+                    // 禁用动态import
+                    if (typeof globalThis.import !== 'undefined') {
+                        globalThis.import = function() {
+                            throw new Error('Dynamic imports are disabled for security reasons');
+                        };
+                    }
+                    
+                    // 禁用require（如果存在）
+                    if (typeof globalThis.require !== 'undefined') {
+                        globalThis.require = function() {
+                            throw new Error('require() is disabled for security reasons');
+                        };
+                    }
+                })();
+            "#;
+
+            ctx.eval::<(), _>(module_deny_script)
+                .map_err(|e| Error::script_execution(format!("Failed to disable modules: {}", e)))?;
+        }
+
+        // 添加安全监控函数
+        let security_monitor_script = r#"
+            (function() {
+                // 监控内存使用情况的辅助函数
+                globalThis.__checkMemory = function() {
+                    // 这里可以添加内存检查逻辑
+                    // QuickJS会自动处理内存限制
+                    return true;
+                };
+                
+                // 监控执行时间的辅助函数
+                globalThis.__checkTimeout = function() {
+                    if (typeof globalThis.__start_time !== 'undefined' && 
+                        typeof globalThis.__timeout_ms !== 'undefined') {
+                        const elapsed = Date.now() - globalThis.__start_time;
+                        if (elapsed > globalThis.__timeout_ms) {
+                            throw new Error('Script execution timeout exceeded');
+                        }
+                    }
+                    return true;
+                };
+            })();
+        "#;
+
+        ctx.eval::<(), _>(security_monitor_script)
+            .map_err(|e| Error::script_execution(format!("Failed to setup security monitoring: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// 获取当前的安全配置
+    ///
+    /// # 返回值
+    /// 返回当前使用的安全配置的克隆
+    pub fn get_security_config(&self) -> SecurityConfig {
+        self.security_config.clone()
+    }
+
+    /// 获取当前运行时的内存使用情况
+    ///
+    /// # 返回值
+    /// 返回内存使用情况（字节），如果无法获取则返回None
+    ///
+    /// # 注意
+    /// 这个功能依赖于QuickJS的内存统计功能
+    pub fn get_memory_usage(&self) -> Option<usize> {
+        // QuickJS的rquickjs绑定可能不直接暴露内存使用情况
+        // 这里返回None，但可以在未来版本中实现
+        None
     }
 
     /// 执行验证脚本
